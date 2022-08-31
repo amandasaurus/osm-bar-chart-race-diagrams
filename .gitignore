@@ -1,2 +1,5 @@
 *.mp4
 *.mkv
+raw_csv_tag_changes.csv
+crosstab_for_flourish.tsv
+table_to_pivot.tsv
