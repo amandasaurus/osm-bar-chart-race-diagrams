@@ -1,32 +1,49 @@
 #! /bin/bash
+
 set -o errexit -o nounset
-FILENAME="$(realpath "${1:?arg 1 must be input filename}")"
+OUTPUT=results.csv
+TAG=building
+NUM_TAGS=200
+MIN_TAG_OCCURANCE=10
+DURATION="week"
+while getopts "i:o:t:T:O:d:" OPT ; do
+	case $OPT in
+		i) FILENAME="$(realpath "${OPTARG}")" ;;
+		o) OUTPUT="$(realpath "${OPTARG}")" ;;
+		t) TAG=$OPTARG ;;
+		T) NUM_TAGS=$OPTARG ;;
+		O) MIN_TAG_OCCURANCE=$OPTARG ;;
+		d) DURATION=$OPTARG ;;
+		*) exit 1;;
+	esac
+done
+
 
 rm -f output.csv
-osm-tag-csv-history -v -i "$FILENAME"  -o ./raw_csv_tag_changes.csv -t building -C old_value,new_value,iso_timestamp
+echo "Converting PBF into tag CSV file..."
+osm-tag-csv-history -v -i "$FILENAME"  -o ./raw_csv_tag_changes.csv -t "$TAG" -C old_value,new_value,iso_timestamp
 
-psql -c "CREATE TABLE IF NOT EXISTS raw_tag_changes (old_value TEXT, new_value TEXT, iso_timestamp TIMESTAMP);"
-psql -c "CREATE INDEX IF NOT EXISTS raw_tag_changes_timestamp ON raw_tag_changes (iso_timestamp);"
-psql -c "CREATE INDEX IF NOT EXISTS raw_tag_changes_values ON raw_tag_changes (new_value, old_value);"
-psql -c "TRUNCATE TABLE raw_tag_changes;"
+echo "Loading CSV into PostgreSQL..."
+psql -c "drop table if exists raw_tag_changes;"
+psql -c "CREATE TABLE raw_tag_changes (old_value TEXT, new_value TEXT, iso_timestamp TIMESTAMP);"
 psql -c "COPY raw_tag_changes FROM STDIN WITH CSV HEADER;" <raw_csv_tag_changes.csv
-psql -c "CREATE TABLE IF NOT EXISTS tag_changes (value TEXT, iso_timestamp TIMESTAMP);"
-psql -c "TRUNCATE TABLE tag_changes;"
-psql -c "DROP MATERIALIZED VIEW IF EXISTS values CASCADE;"
-psql -c "CREATE MATERIALIZED VIEW values AS (select distinct new_value from raw_tag_changes where new_value <> '' order by new_value);"
-psql -c "DROP MATERIALIZED VIEW IF EXISTS dates;"
-psql -c "CREATE MATERIALIZED VIEW dates AS ( select to_char( generate_series( (select date_trunc('year', min(iso_timestamp))  from raw_tag_changes), now(), '1 month'), 'YYYY-MM-DD') );"
-psql -c "DROP MATERIALIZED VIEW IF EXISTS t_to_pivot;"
-psql -c "CREATE MATERIALIZED VIEW t_to_pivot AS ( select values.new_value as tag_value, dates.to_char, sum(case when raw_tag_changes.old_value = values.new_value and raw_tag_changes.new_value = values.new_value then 0 when raw_tag_changes.old_value = values.new_value then -1 when raw_tag_changes.new_value = values.new_value then +1 else 0 end) as value_total from values, dates, raw_tag_changes where raw_tag_changes.iso_timestamp <= dates.to_char::timestamp and (raw_tag_changes.new_value = values.new_value OR raw_tag_changes.old_value = values.new_value) group by (values.new_value, dates.to_char) order by 1, 2);"
+psql -c "drop table if exists tag_changes;"
+psql -c "CREATE TABLE tag_changes AS ( (SELECT  -1 AS delta, old_value AS value, iso_timestamp FROM raw_tag_changes WHERE old_value <> '') UNION ALL ( SELECT  +1 AS delta, new_value AS value, iso_timestamp FROM raw_tag_changes WHERE new_value <> '' ) );"
+psql -c "drop table raw_tag_changes;"
+psql -c "CREATE INDEX IF NOT EXISTS tag_changes__timestamp ON tag_changes (iso_timestamp);"
+psql -c "CREATE INDEX IF NOT EXISTS tag_changes__value ON tag_changes (value);"
 
-psql -At -c "COPY (select * from t_to_pivot order by 1,2) TO STDOUT " | sort > table_to_pivot.tsv
-datamash -s crosstab 1,2 sum 3 < table_to_pivot.tsv > crosstab_for_flourish.tsv
-#
-#rm -f tab
-#psql -At -c "select distinct new_value from raw_tag_changes where new_value <> '' order by new_value;" | sponge | while read VALUE ; do
-#	psql -At -c "select to_char( generate_series( (select date_trunc('year', min(iso_timestamp))  from raw_tag_changes), now(), '1 week'), 'YYYY-MM-DD');" | sponge | while read DATE_COL ; do
-#		NUM=$(psql -At -c "select sum(case when raw_tag_changes.old_value = '$VALUE' and raw_tag_changes.new_value = '$VALUE' then 0 when raw_tag_changes.old_value = '$VALUE' then -1 when raw_tag_changes.new_value = '$VALUE' then +1 else 0 end) as value_total from raw_tag_changes where raw_tag_changes.iso_timestamp <= '$DATE_COL'::timestamp;")
-#		echo -e "$VALUE\t$DATE_COL\t${NUM:-0}"
-#	done	
-#done
+if [ -n "$MIN_TAG_OCCURANCE" ] ; then
+	echo "Deleting any tag key=value which doesn't occur at least $MIN_TAG_OCCURANCE times.."
+	psql -c "delete from tag_changes where value IN (select value from tag_changes group by value having count(*) <= ${MIN_TAG_OCCURANCE});"
+fi
+if [ -n "$NUM_TAGS" ] ; then
+	echo "Deleting all except the top $NUM_TAGS most popular tags..."
+	psql -c "delete from tag_changes where value IN (select value from tag_changes group by value order by count(*) desc offset ${NUM_TAGS});"
+fi
 
+psql -c "copy ( with date_changes AS ( select value, date_trunc('$DURATION', iso_timestamp)::date as date, sum(delta) as delta  from tag_changes group by value, date  order by value, date ) select value, date, sum(delta) over (partition by value order by date) as total from date_changes order by value, date) to stdout with csv header;" > results_long.csv
+#psql -c "drop table tag_changes;"
+
+echo "Crosstab'ing the data into $OUTPUT ..."
+~/code/rust/crosstabber/target/release/crosstabber -i results_long.csv -o "$OUTPUT" -v 0
