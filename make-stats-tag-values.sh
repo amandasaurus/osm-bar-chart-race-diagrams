@@ -1,7 +1,7 @@
 #! /bin/bash
 
 set -o errexit -o nounset
-OUTPUT=results.csv
+OUTPUT=""
 TAG=building
 NUM_TAGS=200
 MIN_TAG_OCCURANCE=10
@@ -45,5 +45,9 @@ fi
 psql -c "copy ( with date_changes AS ( select value, date_trunc('$DURATION', iso_timestamp)::date as date, sum(delta) as delta  from tag_changes group by value, date  order by value, date ) select value, date, sum(delta) over (partition by value order by date) as total from date_changes order by value, date) to stdout with csv header;" > results_long.csv
 #psql -c "drop table tag_changes;"
 
+if [ -z "$OUTPUT" ] ; then
+	OUTPUT="${TAG}.csv"
+fi
 echo "Crosstab'ing the data into $OUTPUT ..."
 ~/code/rust/crosstabber/target/release/crosstabber -i results_long.csv -o "$OUTPUT" -v 0
+rm results_log.csv
