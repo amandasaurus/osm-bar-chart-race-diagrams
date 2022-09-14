@@ -42,7 +42,7 @@ if [ -n "$NUM_TAGS" ] ; then
 	psql -c "delete from tag_changes where value IN (select value from tag_changes group by value order by count(*) desc offset ${NUM_TAGS});"
 fi
 
-psql -c "copy ( with date_changes AS ( select value, date_trunc('$DURATION', iso_timestamp)::date as date, sum(delta) as delta  from tag_changes group by value, date  order by value, date ) select value, date, sum(delta) over (partition by value order by date) as total from date_changes order by value, date) to stdout with csv header;" > results_long.csv
+psql -Xat -c "copy ( with date_changes AS ( select value, date_trunc('$DURATION', iso_timestamp)::date as date, sum(delta) as delta  from tag_changes group by value, date  order by value, date ) select value, date, sum(delta) over (partition by value order by date) as total from date_changes order by value, date) to stdout with csv header;" > results_long.csv
 #psql -c "drop table tag_changes;"
 
 if [ -z "$OUTPUT" ] ; then

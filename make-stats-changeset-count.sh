@@ -23,4 +23,4 @@ psql -c "delete from changeset_data where num_changes = 0;"
 psql -c "create index changeset_data__iso_timestamp on changeset_data (iso_timestamp);"
 psql -c "create index changeset_data__uid on changeset_data (uid);"
 
-psql -c "copy ( select date_trunc('week', iso_timestamp) as date, count(*) as edit from changeset_data group by date order by date asc ) to stdout csv header;" > edits_per_week.csv
+psql -XAt -c "copy ( select date_trunc('week', iso_timestamp) as date, count(*) as edit from changeset_data group by date order by date asc ) to stdout csv header;" > edits_per_week.csv
