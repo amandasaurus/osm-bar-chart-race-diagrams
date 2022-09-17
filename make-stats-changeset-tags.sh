@@ -23,7 +23,7 @@ psql -XAt -c "COPY (
 WITH daily_changes AS (
 	SELECT
 		key as changeset_tag_key,
-		created_at_day as date,
+		to_char(date_trunc('week', created_at_day), 'IYYY-\"W\"IW') as date,
 		sum(+1) as delta
 	from changeset_tags
 	where key <> ''
